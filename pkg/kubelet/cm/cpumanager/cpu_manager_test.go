@@ -44,6 +44,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
+	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/utils/cpuset"
 )
 
@@ -52,9 +53,17 @@ type mockState struct {
 	defaultCPUSet cpuset.CPUSet
 }
 
+func (s *mockState) GetOriginalCPUSet(podUID string, containerName string) (cpuset.CPUSet, bool) {
+	res, exists := s.assignments[podUID][containerName]
+	return res.Original.Clone(), exists
+}
+
 func (s *mockState) GetCPUSet(podUID string, containerName string) (cpuset.CPUSet, bool) {
-	res, ok := s.assignments[podUID][containerName]
-	return res.Clone(), ok
+	res, exists := s.assignments[podUID][containerName]
+	if res.Resized.IsEmpty() {
+		return res.Original.Clone(), exists
+	}
+	return res.Resized.Clone(), exists
 }
 
 func (s *mockState) GetDefaultCPUSet() cpuset.CPUSet {
@@ -70,9 +79,15 @@ func (s *mockState) GetCPUSetOrDefault(podUID string, containerName string) cpus
 
 func (s *mockState) SetCPUSet(podUID string, containerName string, cset cpuset.CPUSet) {
 	if _, exists := s.assignments[podUID]; !exists {
-		s.assignments[podUID] = make(map[string]cpuset.CPUSet)
+		s.assignments[podUID] = make(map[string]state.ContainerCPUAssignment)
+		s.assignments[podUID][containerName] = state.ContainerCPUAssignment{Original: cset, Resized: cpuset.New()}
+	} else {
+		if entry, exists := s.assignments[podUID][containerName]; !exists {
+			s.assignments[podUID][containerName] = state.ContainerCPUAssignment{Original: cset, Resized: cpuset.New()}
+		} else {
+			s.assignments[podUID][containerName] = state.ContainerCPUAssignment{Original: entry.Original, Resized: cset}
+		}
 	}
-	s.assignments[podUID][containerName] = cset
 }
 
 func (s *mockState) SetDefaultCPUSet(cset cpuset.CPUSet) {
@@ -111,7 +126,7 @@ func (p *mockPolicy) Start(_ logr.Logger, s state.State) error {
 	return p.err
 }
 
-func (p *mockPolicy) Allocate(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container) error {
+func (p *mockPolicy) Allocate(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) error {
 	return p.err
 }
 
@@ -119,11 +134,11 @@ func (p *mockPolicy) RemoveContainer(_ logr.Logger, s state.State, podUID string
 	return p.err
 }
 
-func (p *mockPolicy) GetTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
+func (p *mockPolicy) GetTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	return nil
 }
 
-func (p *mockPolicy) GetPodTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod) map[string][]topologymanager.TopologyHint {
+func (p *mockPolicy) GetPodTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	return nil
 }
 
@@ -169,6 +184,7 @@ func makePod(podUID, containerName, cpuRequest, cpuLimit string) *v1.Pod {
 	}
 
 	pod.UID = types.UID(podUID)
+	pod.Name = podUID
 	pod.Spec.Containers[0].Name = containerName
 
 	return pod
@@ -357,7 +373,7 @@ func TestCPUManagerAdd(t *testing.T) {
 		container := &pod.Spec.Containers[0]
 		mgr.activePods = func() []*v1.Pod { return []*v1.Pod{pod} }
 
-		err := mgr.Allocate(pod, container)
+		err := mgr.Allocate(pod, container, lifecycle.AddOperation)
 		if !reflect.DeepEqual(err, testCase.expAllocateErr) {
 			t.Errorf("CPU Manager Allocate() error (%v). expected error: %v but got: %v",
 				testCase.description, testCase.expAllocateErr, err)
@@ -598,7 +614,7 @@ func TestCPUManagerAddWithInitContainers(t *testing.T) {
 		cumCSet := cpuset.New()
 
 		for i := range containers {
-			err := mgr.Allocate(testCase.pod, &containers[i])
+			err := mgr.Allocate(testCase.pod, &containers[i], lifecycle.AddOperation)
 			if err != nil {
 				t.Errorf("StaticPolicy Allocate() error (%v). unexpected error for container id: %v: %v",
 					testCase.description, containerIDs[i], err)
@@ -611,18 +627,18 @@ func TestCPUManagerAddWithInitContainers(t *testing.T) {
 					testCase.description, containerIDs[i], err)
 			}
 
-			cset, found := mockState.assignments[string(testCase.pod.UID)][containers[i].Name]
+			assignment, found := mockState.assignments[string(testCase.pod.UID)][containers[i].Name]
 			if !expCSets[i].IsEmpty() && !found {
 				t.Errorf("StaticPolicy AddContainer() error (%v). expected container %v to be present in assignments %v",
 					testCase.description, containers[i].Name, mockState.assignments)
 			}
 
-			if found && !cset.Equals(expCSets[i]) {
+			if found && !assignment.Original.Equals(expCSets[i]) {
 				t.Errorf("StaticPolicy AddContainer() error (%v). expected cpuset %v for container %v but got %v",
-					testCase.description, expCSets[i], containers[i].Name, cset)
+					testCase.description, expCSets[i], containers[i].Name, assignment.Original)
 			}
 
-			cumCSet = cumCSet.Union(cset)
+			cumCSet = cumCSet.Union(assignment.Original)
 		}
 
 		if !testCase.stDefaultCPUSet.Difference(cumCSet).Equals(mockState.defaultCPUSet) {
@@ -871,16 +887,16 @@ func TestReconcileState(t *testing.T) {
 			pspFound:  true,
 			updateErr: nil,
 			stAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			stDefaultCPUSet:           cpuset.New(3, 4, 5, 6, 7),
 			lastUpdateStAssignments:   state.ContainerCPUAssignments{},
 			lastUpdateStDefaultCPUSet: cpuset.New(),
 			expectStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			expectStDefaultCPUSet:        cpuset.New(3, 4, 5, 6, 7),
@@ -919,16 +935,16 @@ func TestReconcileState(t *testing.T) {
 			pspFound:  true,
 			updateErr: nil,
 			stAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			stDefaultCPUSet:           cpuset.New(3, 4, 5, 6, 7),
 			lastUpdateStAssignments:   state.ContainerCPUAssignments{},
 			lastUpdateStDefaultCPUSet: cpuset.New(),
 			expectStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			expectStDefaultCPUSet:        cpuset.New(3, 4, 5, 6, 7),
@@ -1034,16 +1050,16 @@ func TestReconcileState(t *testing.T) {
 			pspFound:  true,
 			updateErr: nil,
 			stAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(), Resized: cpuset.New()},
 				},
 			},
 			stDefaultCPUSet:           cpuset.New(1, 2, 3, 4, 5, 6, 7),
 			lastUpdateStAssignments:   state.ContainerCPUAssignments{},
 			lastUpdateStDefaultCPUSet: cpuset.New(),
 			expectStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(), Resized: cpuset.New()},
 				},
 			},
 			expectStDefaultCPUSet:        cpuset.New(1, 2, 3, 4, 5, 6, 7),
@@ -1082,16 +1098,16 @@ func TestReconcileState(t *testing.T) {
 			pspFound:  true,
 			updateErr: fmt.Errorf("fake container update error"),
 			stAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			stDefaultCPUSet:           cpuset.New(3, 4, 5, 6, 7),
 			lastUpdateStAssignments:   state.ContainerCPUAssignments{},
 			lastUpdateStDefaultCPUSet: cpuset.New(),
 			expectStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			expectStDefaultCPUSet:        cpuset.New(3, 4, 5, 6, 7),
@@ -1130,19 +1146,19 @@ func TestReconcileState(t *testing.T) {
 			pspFound:  true,
 			updateErr: nil,
 			stAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
-				"secondfakePodUID": map[string]cpuset.CPUSet{
-					"secondfakeContainerName": cpuset.New(3, 4),
+				"secondfakePodUID": map[string]state.ContainerCPUAssignment{
+					"secondfakeContainerName": {Original: cpuset.New(3, 4), Resized: cpuset.New()},
 				},
 			},
 			stDefaultCPUSet:           cpuset.New(5, 6, 7),
 			lastUpdateStAssignments:   state.ContainerCPUAssignments{},
 			lastUpdateStDefaultCPUSet: cpuset.New(),
 			expectStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			expectStDefaultCPUSet:        cpuset.New(3, 4, 5, 6, 7),
@@ -1181,20 +1197,20 @@ func TestReconcileState(t *testing.T) {
 			pspFound:  true,
 			updateErr: nil,
 			stAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			stDefaultCPUSet: cpuset.New(5, 6, 7),
 			lastUpdateStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			lastUpdateStDefaultCPUSet: cpuset.New(5, 6, 7),
 			expectStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			expectStDefaultCPUSet:        cpuset.New(5, 6, 7),
@@ -1233,20 +1249,20 @@ func TestReconcileState(t *testing.T) {
 			pspFound:  true,
 			updateErr: nil,
 			stAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			stDefaultCPUSet: cpuset.New(3, 4, 5, 6, 7),
 			lastUpdateStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(3, 4),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(3, 4), Resized: cpuset.New()},
 				},
 			},
 			lastUpdateStDefaultCPUSet: cpuset.New(1, 2, 5, 6, 7),
 			expectStAssignments: state.ContainerCPUAssignments{
-				"fakePodUID": map[string]cpuset.CPUSet{
-					"fakeContainerName": cpuset.New(1, 2),
+				"fakePodUID": map[string]state.ContainerCPUAssignment{
+					"fakeContainerName": {Original: cpuset.New(1, 2), Resized: cpuset.New()},
 				},
 			},
 			expectStDefaultCPUSet:        cpuset.New(3, 4, 5, 6, 7),
@@ -1386,7 +1402,7 @@ func TestCPUManagerAddWithResvList(t *testing.T) {
 		container := &pod.Spec.Containers[0]
 		mgr.activePods = func() []*v1.Pod { return []*v1.Pod{pod} }
 
-		err := mgr.Allocate(pod, container)
+		err := mgr.Allocate(pod, container, lifecycle.AddOperation)
 		if !reflect.DeepEqual(err, testCase.expAllocateErr) {
 			t.Errorf("CPU Manager Allocate() error (%v). expected error: %v but got: %v",
 				testCase.description, testCase.expAllocateErr, err)
@@ -1536,7 +1552,7 @@ func TestCPUManagerGetAllocatableCPUs(t *testing.T) {
 		pod := makePod("fakePod", "fakeContainer", "2", "2")
 		container := &pod.Spec.Containers[0]
 
-		_ = mgr.Allocate(pod, container)
+		_ = mgr.Allocate(pod, container, lifecycle.AddOperation)
 
 		if !mgr.GetAllocatableCPUs().Equals(testCase.expAllocatableCPUs) {
 			t.Errorf("Policy GetAllocatableCPUs() error (%v). expected cpuset %v for container %v but got %v",
