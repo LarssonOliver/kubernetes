@@ -1212,6 +1212,8 @@ func (p *staticPolicy) initializeMetrics(logger logr.Logger, s state.State) {
 	totalAssignedCPUs := getTotalAssignedExclusiveCPUs(s)
 	metrics.CPUManagerExclusiveCPUsAllocationCount.Set(float64(totalAssignedCPUs.Size()))
 	updateAllocationPerNUMAMetric(logger, p.topology, totalAssignedCPUs)
+	// TODO fix the hard coded nodeID
+	metrics.CPUManagerAllocationPerNUMA.WithLabelValues("1").Add(0)
 }
 
 func (p *staticPolicy) updateMetricsOnAllocate(logger logr.Logger, s state.State, cpuAlloc topology.Allocation) {
@@ -1460,14 +1462,9 @@ func (p *staticPolicy) getTopologyHintsForResize(logger logr.Logger, s state.Sta
 			if allocated.Size() < requested {
 				reusable = reusable.Union(allocated)
 			} else {
-				reusable = allocated
-
-				// Get a list of reusable CPUs (e.g. CPUs reused from initContainers).
-				// It should be an empty CPUSet for a newly created pod.
-				reusable = reusable.Union(p.cpusToReuse[string(pod.UID)])
-
 				// Generate hints.
-				cpuHints := p.generateCPUTopologyHintsForResize(cpuset.New(), reusable, requested)
+				mustKeepCPUsForResize, _ := s.GetOriginalCPUSet(string(pod.UID), container.Name)
+				cpuHints := p.generateCPUTopologyHintsForResize(allocated, mustKeepCPUsForResize, requested)
 				logger.Info("TopologyHints generated", "pod", klog.KObj(pod), "containerName", container.Name, "cpuHints", cpuHints)
 
 				return map[string][]topologymanager.TopologyHint{
