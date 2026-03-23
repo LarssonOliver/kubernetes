@@ -210,15 +210,15 @@ type mockHintProvider struct {
 	//allocateError error
 }
 
-func (m *mockHintProvider) GetTopologyHints(pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]TopologyHint {
+func (m *mockHintProvider) GetTopologyHints(pod *v1.Pod, container *v1.Container) map[string][]TopologyHint {
 	return m.th
 }
 
-func (m *mockHintProvider) GetPodTopologyHints(pod *v1.Pod, operation lifecycle.Operation) map[string][]TopologyHint {
+func (m *mockHintProvider) GetPodTopologyHints(pod *v1.Pod) map[string][]TopologyHint {
 	return m.th
 }
 
-func (m *mockHintProvider) Allocate(pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) error {
+func (m *mockHintProvider) Allocate(pod *v1.Pod, container *v1.Container) error {
 	//return allocateError
 	return nil
 }
