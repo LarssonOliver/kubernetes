@@ -46,10 +46,10 @@ func NewPodScope(policy Policy) Scope {
 	}
 }
 
-func (s *podScope) Admit(ctx context.Context, pod *v1.Pod, operation lifecycle.Operation) lifecycle.PodAdmitResult {
+func (s *podScope) Admit(ctx context.Context, pod *v1.Pod) lifecycle.PodAdmitResult {
 	logger := klog.FromContext(ctx)
 
-	bestHint, admit := s.calculateAffinity(logger, pod, operation)
+	bestHint, admit := s.calculateAffinity(logger, pod)
 	logger.Info("Best TopologyHint", "bestHint", bestHint, "pod", klog.KObj(pod))
 	if !admit {
 		if IsAlignmentGuaranteed(s.policy) {
@@ -57,9 +57,9 @@ func (s *podScope) Admit(ctx context.Context, pod *v1.Pod, operation lifecycle.O
 			metrics.ContainerAlignedComputeResourcesFailure.WithLabelValues(metrics.AlignScopePod, metrics.AlignedNUMANode).Inc()
 		}
 		metrics.TopologyManagerAdmissionErrorsTotal.Inc()
-		if operation == lifecycle.ResizeOperation {
-			return lifecycle.PodAdmitResult{Admit: false, Reason: v1.PodReasonInfeasible, Message: "Resources cannot be resized with Topology locality"}
-		}
+		// if operation == lifecycle.ResizeOperation {
+		// 	return lifecycle.PodAdmitResult{Admit: false, Reason: v1.PodReasonInfeasible, Message: "Resources cannot be resized with Topology locality"}
+		// }
 		return admission.GetPodAdmitResult(&TopologyAffinityError{})
 	}
 
@@ -67,7 +67,7 @@ func (s *podScope) Admit(ctx context.Context, pod *v1.Pod, operation lifecycle.O
 		logger.Info("Topology Affinity", "bestHint", bestHint, "pod", klog.KObj(pod), "containerName", container.Name)
 		s.setTopologyHints(string(pod.UID), container.Name, bestHint)
 
-		err := s.allocateAlignedResources(pod, &container, operation)
+		err := s.allocateAlignedResources(pod, &container)
 		if err != nil {
 			metrics.TopologyManagerAdmissionErrorsTotal.Inc()
 			return admission.GetPodAdmitResult(err)
@@ -81,21 +81,21 @@ func (s *podScope) Admit(ctx context.Context, pod *v1.Pod, operation lifecycle.O
 	return admission.GetPodAdmitResult(nil)
 }
 
-func (s *podScope) accumulateProvidersHints(logger klog.Logger, pod *v1.Pod, operation lifecycle.Operation) []map[string][]TopologyHint {
+func (s *podScope) accumulateProvidersHints(logger klog.Logger, pod *v1.Pod) []map[string][]TopologyHint {
 	var providersHints []map[string][]TopologyHint
 
 	for _, provider := range s.hintProviders {
 		// Get the TopologyHints for a Pod from a provider.
-		hints := provider.GetPodTopologyHints(pod, operation)
+		hints := provider.GetPodTopologyHints(pod)
 		providersHints = append(providersHints, hints)
-		logger.Info("TopologyHints", "hints", hints, "pod", klog.KObj(pod), "operation", operation)
+		logger.Info("TopologyHints", "hints", hints, "pod", klog.KObj(pod), "operation")
 	}
 	return providersHints
 }
 
-func (s *podScope) calculateAffinity(logger klog.Logger, pod *v1.Pod, operation lifecycle.Operation) (TopologyHint, bool) {
-	providersHints := s.accumulateProvidersHints(logger, pod, operation)
+func (s *podScope) calculateAffinity(logger klog.Logger, pod *v1.Pod) (TopologyHint, bool) {
+	providersHints := s.accumulateProvidersHints(logger, pod)
 	bestHint, admit := s.policy.Merge(logger, providersHints)
-	logger.Info("PodTopologyHint", "bestHint", bestHint, "pod", klog.KObj(pod), "operation", operation)
+	logger.Info("PodTopologyHint", "bestHint", bestHint, "pod", klog.KObj(pod), "operation")
 	return bestHint, admit
 }

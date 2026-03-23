@@ -44,7 +44,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
-	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/utils/cpuset"
 )
 
@@ -126,7 +125,7 @@ func (p *mockPolicy) Start(_ logr.Logger, s state.State) error {
 	return p.err
 }
 
-func (p *mockPolicy) Allocate(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) error {
+func (p *mockPolicy) Allocate(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container) error {
 	return p.err
 }
 
@@ -134,11 +133,11 @@ func (p *mockPolicy) RemoveContainer(_ logr.Logger, s state.State, podUID string
 	return p.err
 }
 
-func (p *mockPolicy) GetTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
+func (p *mockPolicy) GetTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
 	return nil
 }
 
-func (p *mockPolicy) GetPodTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
+func (p *mockPolicy) GetPodTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod) map[string][]topologymanager.TopologyHint {
 	return nil
 }
 
@@ -373,7 +372,7 @@ func TestCPUManagerAdd(t *testing.T) {
 		container := &pod.Spec.Containers[0]
 		mgr.activePods = func() []*v1.Pod { return []*v1.Pod{pod} }
 
-		err := mgr.Allocate(pod, container, lifecycle.AddOperation)
+		err := mgr.Allocate(pod, container)
 		if !reflect.DeepEqual(err, testCase.expAllocateErr) {
 			t.Errorf("CPU Manager Allocate() error (%v). expected error: %v but got: %v",
 				testCase.description, testCase.expAllocateErr, err)
@@ -614,7 +613,7 @@ func TestCPUManagerAddWithInitContainers(t *testing.T) {
 		cumCSet := cpuset.New()
 
 		for i := range containers {
-			err := mgr.Allocate(testCase.pod, &containers[i], lifecycle.AddOperation)
+			err := mgr.Allocate(testCase.pod, &containers[i])
 			if err != nil {
 				t.Errorf("StaticPolicy Allocate() error (%v). unexpected error for container id: %v: %v",
 					testCase.description, containerIDs[i], err)
@@ -1402,7 +1401,7 @@ func TestCPUManagerAddWithResvList(t *testing.T) {
 		container := &pod.Spec.Containers[0]
 		mgr.activePods = func() []*v1.Pod { return []*v1.Pod{pod} }
 
-		err := mgr.Allocate(pod, container, lifecycle.AddOperation)
+		err := mgr.Allocate(pod, container)
 		if !reflect.DeepEqual(err, testCase.expAllocateErr) {
 			t.Errorf("CPU Manager Allocate() error (%v). expected error: %v but got: %v",
 				testCase.description, testCase.expAllocateErr, err)
@@ -1552,7 +1551,7 @@ func TestCPUManagerGetAllocatableCPUs(t *testing.T) {
 		pod := makePod("fakePod", "fakeContainer", "2", "2")
 		container := &pod.Spec.Containers[0]
 
-		_ = mgr.Allocate(pod, container, lifecycle.AddOperation)
+		_ = mgr.Allocate(pod, container)
 
 		if !mgr.GetAllocatableCPUs().Equals(testCase.expAllocatableCPUs) {
 			t.Errorf("Policy GetAllocatableCPUs() error (%v). expected cpuset %v for container %v but got %v",

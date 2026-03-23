@@ -33,7 +33,6 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
-	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/utils/cpuset"
 )
@@ -57,18 +56,6 @@ const (
 	// ErrorUnsupportedLifecycleOperation represents the type of a UnsupportedLifecycleOperationError
 	ErrorUnsupportedLifecycleOperation = "UnsupportedLifecycleOperationError"
 )
-
-type UnsupportedLifecycleOperationError struct {
-	Operation lifecycle.Operation
-}
-
-func (e UnsupportedLifecycleOperationError) Error() string {
-	return fmt.Sprintf("Unsupported Lifecycle Operation Error: %s is neither AddOperation nor ResizeOperation", e.Operation)
-}
-
-func (e UnsupportedLifecycleOperationError) Type() string {
-	return ErrorUnsupportedLifecycleOperation
-}
 
 // SMTAlignmentError represents an error due to SMT alignment
 type SMTAlignmentError struct {
@@ -423,24 +410,21 @@ func (p *staticPolicy) updateCPUsToReuse(pod *v1.Pod, container *v1.Container, c
 	p.cpusToReuse[string(pod.UID)] = p.cpusToReuse[string(pod.UID)].Difference(cset)
 }
 
-func (p *staticPolicy) Allocate(logger logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) (rerr error) {
-	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "operation", operation)
+func (p *staticPolicy) Allocate(logger logr.Logger, s state.State, pod *v1.Pod, container *v1.Container) (rerr error) {
+	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "operation")
 	logger.Info("Allocate start") // V=0 for backward compatibility
 	defer logger.V(2).Info("Allocate end")
 
-	switch operation {
-	case lifecycle.AddOperation:
+	if pod.Status.Phase != v1.PodRunning {
 		return p.allocateForAdd(logger, s, pod, container)
-	case lifecycle.ResizeOperation:
+	} else {
 		if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingExclusiveCPUs) || !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 			logger.Info("CPU Manager allocation resize operation skipped, InPlacePodVerticalScaling and/or InPlacePodVerticalScalingExclusiveCPUs not enabled")
 			return nil
 		}
 		return p.allocateForResize(logger, s, pod, container)
-	default:
-		return UnsupportedLifecycleOperationError{
-			Operation: operation,
-		}
+		// default:
+		// 	return fmt.Errorf("unsupported lifecycle operation")
 	}
 }
 
@@ -877,20 +861,22 @@ func (p *staticPolicy) takeByTopology(logger logr.Logger, availableCPUs cpuset.C
 	return takeByTopologyNUMAPacked(logger, p.topology, availableCPUs, numCPUs, cpuSortingStrategy, p.options.PreferAlignByUncoreCacheOption)
 }
 
-func (p *staticPolicy) GetTopologyHints(logger logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
-	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "operation", operation)
-	switch operation {
-	case lifecycle.AddOperation:
+func (p *staticPolicy) GetTopologyHints(logger logr.Logger, s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
+	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "operation")
+	if pod.Status.Phase != v1.PodRunning {
+		// switch operation {
+		// case lifecycle.AddOperation:
 		return p.getTopologyHintsForAdd(logger, s, pod, container)
-	case lifecycle.ResizeOperation:
+	} else {
+		// case lifecycle.ResizeOperation:
 		if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingExclusiveCPUs) || !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 			logger.V(3).Info("CPU Manager hint generation skipped, resize operation not supported by the static CPU manager policy, InPlacePodVerticalScaling and/or InPlacePodVerticalScalingExclusiveCPUs are not enabled", "pod", klog.KObj(pod), "podUID", pod.UID)
 			return nil
 		}
 		return p.getTopologyHintsForResize(logger, s, pod, container)
-	default:
-		logger.V(3).Info("CPU Manager hint generation skipped, operation not supported by the static CPU manager policy", "pod", klog.KObj(pod), "podUID", pod.UID)
-		return nil
+		// default:
+		// 	logger.V(3).Info("CPU Manager hint generation skipped, operation not supported by the static CPU manager policy", "pod", klog.KObj(pod), "podUID", pod.UID)
+		// 	return nil
 	}
 }
 
@@ -947,20 +933,19 @@ func (p *staticPolicy) getTopologyHintsForAdd(logger logr.Logger, s state.State,
 	}
 }
 
-func (p *staticPolicy) GetPodTopologyHints(logger logr.Logger, s state.State, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
-	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod), "podUID", pod.UID, "operation", operation)
-	switch operation {
-	case lifecycle.AddOperation:
+func (p *staticPolicy) GetPodTopologyHints(logger logr.Logger, s state.State, pod *v1.Pod) map[string][]topologymanager.TopologyHint {
+	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod), "podUID", pod.UID, "operation")
+	if pod.Status.Phase != v1.PodRunning {
 		return p.getPodTopologyHintsForAdd(logger, s, pod)
-	case lifecycle.ResizeOperation:
+	} else {
 		if !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScalingExclusiveCPUs) || !utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 			logger.V(3).Info("CPU Manager hint generation skipped, resize operation not supported by the static CPU manager policy, InPlacePodVerticalScaling and/or InPlacePodVerticalScalingExclusiveCPUs are not enabled", "pod", klog.KObj(pod), "podUID", pod.UID)
 			return nil
 		}
 		return p.getPodTopologyHintsForResize(logger, s, pod)
-	default:
-		logger.V(3).Info("CPU Manager hint generation skipped, operation not supported by the static CPU manager policy", "pod", klog.KObj(pod), "podUID", pod.UID)
-		return nil
+		// default:
+		// 	logger.V(3).Info("CPU Manager hint generation skipped, operation not supported by the static CPU manager policy", "pod", klog.KObj(pod), "podUID", pod.UID)
+		// 	return nil
 	}
 }
 
