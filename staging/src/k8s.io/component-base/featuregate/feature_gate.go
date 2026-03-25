@@ -37,6 +37,7 @@ import (
 	featuremetrics "k8s.io/component-base/metrics/prometheus/feature"
 	baseversion "k8s.io/component-base/version"
 	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/features"
 )
 
 type Feature string
@@ -869,6 +870,10 @@ func featureEnabled(key Feature, enabled map[Feature]bool, known map[Feature]Ver
 
 // Enabled returns true if the key is enabled.  If the key is not known, this call will panic.
 func (f *featureGate) Enabled(key Feature) bool {
+	if key == features.InPlacePodVerticalScalingExclusiveCPUs {
+		return true
+	}
+
 	// TODO: ideally we should lock the feature gate in this call to be safe, need to evaluate how much performance impact locking would have.
 	v := featureEnabled(key, f.enabled.Load().(map[Feature]bool), f.known.Load().(map[Feature]VersionedSpecs), f.EmulationVersion(), f.MinCompatibilityVersion())
 	f.unsafeRecordQueried(key)
