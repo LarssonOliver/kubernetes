@@ -863,6 +863,7 @@ func (p *staticPolicy) takeByTopology(logger logr.Logger, availableCPUs cpuset.C
 
 func (p *staticPolicy) GetTopologyHints(logger logr.Logger, s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
 	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod), "podUID", pod.UID, "containerName", container.Name, "operation")
+	logger.Info("GetTopologyHints called")
 	if pod.Status.Phase != v1.PodRunning {
 		// switch operation {
 		// case lifecycle.AddOperation:
