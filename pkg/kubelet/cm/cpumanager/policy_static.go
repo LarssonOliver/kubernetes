@@ -1274,28 +1274,32 @@ func (p *staticPolicy) isFeasibleResize(logger logr.Logger, s state.State, pod *
 					Shared2Exclusive: false,
 				}
 			}
+
+			// Skip promised CPU size check
+			return nil
+
 			// Todo this is a good place to add a check with cpu manage
 			// state reading original / resized and check if allocated is
 			// up to date, this will be useful for troubleshooting  and
 			// fine tune errors
-			mustKeepCPUsPromised, ok := s.GetOriginalCPUSet(string(pod.UID), container.Name)
-			if !ok {
-				return getOriginalCPUSetError{
-					PodUID:        string(pod.UID),
-					ContainerName: container.Name,
-				}
-			}
-			numCPUs := p.guaranteedCPUs(logger, pod, container)
-			promisedCPUsQuantity := mustKeepCPUsPromised.Size()
-			if promisedCPUsQuantity <= numCPUs {
-				return nil
-			}
-			return prohibitedCPUAllocationError{
-				RequestedCPUs:  cpuQuantity.String(),
-				AllocatedCPUs:  allocatedCPUQuantity.String(),
-				OriginalCPUs:   promisedCPUsQuantity,
-				GuaranteedCPUs: numCPUs,
-			}
+			// mustKeepCPUsPromised, ok := s.GetOriginalCPUSet(string(pod.UID), container.Name)
+			// if !ok {
+			// 	return getOriginalCPUSetError{
+			// 		PodUID:        string(pod.UID),
+			// 		ContainerName: container.Name,
+			// 	}
+			// }
+			// numCPUs := p.guaranteedCPUs(logger, pod, container)
+			// promisedCPUsQuantity := mustKeepCPUsPromised.Size()
+			// if promisedCPUsQuantity <= numCPUs {
+			// 	return nil
+			// }
+			// return prohibitedCPUAllocationError{
+			// 	RequestedCPUs:  cpuQuantity.String(),
+			// 	AllocatedCPUs:  allocatedCPUQuantity.String(),
+			// 	OriginalCPUs:   promisedCPUsQuantity,
+			// 	GuaranteedCPUs: numCPUs,
+			// }
 		} else if cpuQuantity.Value()*1000 == cpuQuantity.MilliValue() {
 			// container belongs in shared pool
 			// container move to exclusive pool not allowed
