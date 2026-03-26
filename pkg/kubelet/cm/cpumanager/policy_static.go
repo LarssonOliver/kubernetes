@@ -594,9 +594,10 @@ func (p *staticPolicy) allocateForResize(logger logr.Logger, s state.State, pod 
 		// Call Topology Manager to get the aligned socket affinity across all hint providers.
 		hint := p.affinity.GetAffinity(string(pod.UID), container.Name)
 		logger.Info("Topology Affinity", "pod", klog.KObj(pod), "containerName", container.Name, "affinity", hint)
+
 		// Attempt new allocation ( reusing allocated CPUs ) according to the NUMA affinity contained in the hint
 		// Since NUMA affinity container in the hint is unmutable already allocated CPUs pass the criteria
-		mustKeepCPUsForResize, ok := s.GetOriginalCPUSet(string(pod.UID), container.Name)
+		_, ok := s.GetOriginalCPUSet(string(pod.UID), container.Name)
 		if !ok {
 			err := getOriginalCPUSetError{
 				PodUID:        string(pod.UID),
@@ -604,8 +605,10 @@ func (p *staticPolicy) allocateForResize(logger logr.Logger, s state.State, pod 
 			}
 			return err
 		}
+
 		// Allocate CPUs according to the NUMA affinity contained in the hint.
-		newallocatedcpuset, witherr := p.allocateCPUsForResize(logger, s, numCPUs, hint.NUMANodeAffinity, p.cpusToReuse[string(pod.UID)], &cpusInUseByPodContainer, &mustKeepCPUsForResize)
+		newallocatedcpuset, witherr := p.allocateCPUsForResize(logger, s, numCPUs, hint.NUMANodeAffinity, p.cpusToReuse[string(pod.UID)], &cpusInUseByPodContainer, nil)
+		// newallocatedcpuset, witherr := p.allocateCPUsForResize(logger, s, numCPUs, hint.NUMANodeAffinity, p.cpusToReuse[string(pod.UID)], &cpusInUseByPodContainer, &mustKeepCPUsForResize)
 		if witherr != nil {
 			err := ResizeAllocateCPUsError{
 				PodUID:        string(pod.UID),
@@ -1275,7 +1278,6 @@ func (p *staticPolicy) isFeasibleResize(logger logr.Logger, s state.State, pod *
 				}
 			}
 
-			// Skip promised CPU size check
 			return nil
 
 			// Todo this is a good place to add a check with cpu manage
